@@ -18,25 +18,28 @@ export interface PublishingJob {
 /**
  * Cerca UN job pronto da pubblicare e lo "prende in carico".
  *
- * "Pronto" = status 'scheduled' E orario di pubblicazione gia' passato.
+ * "Pronto" = status 'pending' E orario di pubblicazione gia' passato.
  *
  * Il trucco importante e' il "claim atomico": aggiorniamo la riga da
- * 'scheduled' a 'running' filtrando ANCHE per status = 'scheduled'.
+ * 'pending' a 'processing' filtrando ANCHE per status = 'pending'.
  * Cosi' se per caso due worker girassero insieme, solo uno riesce a
- * cambiare la riga; l'altro trova che non e' piu' 'scheduled' e la salta.
+ * cambiare la riga; l'altro trova che non e' piu' 'pending' e la salta.
  * E' il modo piu' semplice per evitare che lo stesso post venga
  * pubblicato due volte.
+ *
+ * (Gli stati validi sono definiti dal vincolo del DB:
+ *  pending | processing | published | failed | cancelled)
  *
  * Ritorna il job preso in carico, oppure null se non c'e' lavoro.
  */
 export async function claimNextJob(): Promise<PublishingJob | null> {
-  // 1. Cerco un candidato: il job schedulato piu' vecchio il cui orario e' arrivato.
+  // 1. Cerco un candidato: il job in attesa piu' vecchio il cui orario e' arrivato.
   const nowIso = new Date().toISOString();
 
   const { data: candidates, error: selectError } = await supabase
     .from("publishing_jobs")
     .select("*")
-    .eq("status", "scheduled")
+    .eq("status", "pending")
     .lte("scheduled_at", nowIso)
     .order("scheduled_at", { ascending: true })
     .limit(1);
@@ -52,18 +55,16 @@ export async function claimNextJob(): Promise<PublishingJob | null> {
 
   const candidate = candidates[0] as PublishingJob;
 
-  // 2. Provo a "reclamarlo": lo passo a 'running' SOLO se e' ancora 'scheduled'.
+  // 2. Provo a "reclamarlo": lo passo a 'processing' SOLO se e' ancora 'pending'.
   //    Se un altro worker l'ha gia' preso, questo update non tocca nessuna riga.
   const { data: claimed, error: claimError } = await supabase
     .from("publishing_jobs")
     .update({
-      status: "running",
+      status: "processing",
       current_step: "claimed",
-      // annotiamo chi l'ha preso, utile per debug e per un futuro con piu' worker
-      // (se la colonna locked_by non esiste ancora nel tuo schema, vedi nota sotto)
     })
     .eq("id", candidate.id)
-    .eq("status", "scheduled") // <-- questa condizione e' il "lock"
+    .eq("status", "pending") // <-- questa condizione e' il "lock"
     .select()
     .single();
 

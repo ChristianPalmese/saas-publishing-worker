@@ -24,10 +24,11 @@ async function processJob(jobId: string): Promise<void> {
   // Simuliamo un attimo di lavoro
   await sleep(1000);
 
-  // Per ora lo segniamo con uno stato di test cosi' vedi che il ciclo funziona.
-  // Nelle fasi successive qui ci sara' il risultato reale (published / error / ecc.)
-  await updateJobStatus(jobId, "queued", { current_step: "test-ok" });
-  console.log(`[worker] Job ${jobId} gestito (test). Lo rimetto in 'queued'.`);
+  // Per ora lo rimettiamo in 'pending' cosi' puoi ri-testare lo stesso job
+  // piu' volte senza doverne creare uno nuovo ogni volta.
+  // Nelle fasi successive qui ci sara' il risultato reale (published / failed / ecc.)
+  await updateJobStatus(jobId, "pending", { current_step: "test-ok" });
+  console.log(`[worker] Job ${jobId} gestito (test). Lo rimetto in 'pending' per poterlo ri-testare.`);
 }
 
 /**
