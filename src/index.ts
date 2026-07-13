@@ -1,42 +1,78 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import { config } from "./config.js";
-import { claimNextJob, updateJobStatus } from "./queue.js";
+import { claimNextJob, updateJobStatus, type PublishingJob } from "./queue.js";
+import { publishMediaPost } from "./publishers/playwrightPublisher.js";
+import { loadPublishingPayload } from "./services/loadPublishingPayload.js";
+import { PublisherError } from "./types/publishing.js";
 
-// Piccola utility per "aspettare" un tot di millisecondi.
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Flag per uno spegnimento pulito quando premi Ctrl+C.
 let running = true;
 
 /**
- * Questa e' la funzione che gestisce UN job.
- *
- * IMPORTANTE (Fase 1+2): per ora NON apre nessun browser e NON pubblica niente.
- * Si limita a dimostrare che il job e' stato preso correttamente,
- * poi lo rimette in uno stato di test. La logica vera (Playwright,
- * ricette, pubblicazione) la aggiungiamo nelle fasi successive.
+ * Gestisce un singolo job: valida le opzioni, aggiorna current_step,
+ * chiama il publisher Playwright e riporta l'esito su Supabase.
  */
-async function processJob(jobId: string): Promise<void> {
-  console.log(`[worker] Sto "lavorando" il job ${jobId}...`);
-  console.log(`[worker] (In questa fase non pubblico ancora nulla: e' solo un test della coda.)`);
+async function processJob(job: PublishingJob): Promise<void> {
+  console.log(`[worker] Lavoro il job ${job.id}...`);
 
-  // Simuliamo un attimo di lavoro
-  await sleep(1000);
+  let tempDir: string | undefined;
 
-  // Per ora lo rimettiamo in 'pending' cosi' puoi ri-testare lo stesso job
-  // piu' volte senza doverne creare uno nuovo ogni volta.
-  // Nelle fasi successive qui ci sara' il risultato reale (published / failed / ecc.)
-  await updateJobStatus(jobId, "pending", { current_step: "test-ok" });
-  console.log(`[worker] Job ${jobId} gestito (test). Lo rimetto in 'pending' per poterlo ri-testare.`);
+  try {
+    await updateJobStatus(job.id, "processing", { current_step: "loading-payload" });
+    const options = await loadPublishingPayload(job);
+    tempDir = options.mediaPaths[0] ? path.dirname(options.mediaPaths[0]) : undefined;
+
+    await updateJobStatus(job.id, "processing", { current_step: "publishing" });
+
+    const result = await publishMediaPost(job.id, options, async (step) => {
+      await updateJobStatus(job.id, "processing", { current_step: step });
+    });
+
+    if (result.dryRun) {
+      await updateJobStatus(job.id, "processing", { current_step: "dry-run-completed" });
+      console.log(`[worker] Job ${job.id}: dry run completato, nessuna pubblicazione reale.`);
+      return;
+    }
+
+    await updateJobStatus(job.id, "published", {
+      current_step: "publication-completed",
+      ...(result.externalPostId ? { external_post_id: result.externalPostId } : {}),
+    });
+    console.log(`[worker] Job ${job.id} pubblicato.`);
+  } catch (err) {
+    const errorCode = err instanceof PublisherError ? err.code : "UNKNOWN_ERROR";
+    console.error(`[worker] Job ${job.id} fallito (${errorCode}):`, err instanceof Error ? err.message : err);
+
+    await updateJobStatus(job.id, "failed", {
+      current_step: "publication-failed",
+      error_code: errorCode,
+    });
+  } finally {
+    if (tempDir) {
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
 }
 
-/**
- * Il loop principale: resta acceso e ogni POLL_INTERVAL_MS controlla la coda.
- * E' il "fattorino che guarda la lavagna ogni tot secondi".
- */
 async function mainLoop(): Promise<void> {
   console.log(`[worker] Avviato (id: ${config.workerId}).`);
+
+  if (!config.enableRealPublishing) {
+    console.log("[worker] Pubblicazione reale disabilitata. La coda non verrà elaborata.");
+    console.log("[worker] Premi Ctrl+C per fermare.\n");
+
+    while (running) {
+      await sleep(config.pollIntervalMs);
+    }
+
+    console.log("\n[worker] Fermato in modo pulito. A presto!");
+    return;
+  }
+
   console.log(`[worker] Controllo la coda ogni ${config.pollIntervalMs / 1000} secondi.`);
   console.log(`[worker] Premi Ctrl+C per fermare.\n`);
 
@@ -45,10 +81,8 @@ async function mainLoop(): Promise<void> {
       const job = await claimNextJob();
 
       if (job) {
-        await processJob(job.id);
+        await processJob(job);
       } else {
-        // Nessun lavoro: aspetto e riprovo.
-        // (Stampa un puntino cosi' vedi che e' vivo, senza intasare la console.)
         process.stdout.write(".");
       }
     } catch (err) {
@@ -61,7 +95,6 @@ async function mainLoop(): Promise<void> {
   console.log("\n[worker] Fermato in modo pulito. A presto!");
 }
 
-// Gestione dello spegnimento con Ctrl+C
 process.on("SIGINT", () => {
   console.log("\n[worker] Ricevuto segnale di stop, finisco il ciclo corrente...");
   running = false;

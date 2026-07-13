@@ -1,5 +1,6 @@
 import { supabase } from "./supabase.js";
 import { config } from "./config.js";
+import type { PublishingJobStatus } from "./types/publishing.js";
 
 // Tipo che descrive un job cosi' come ci arriva dal database.
 // (Semplificato: aggiungeremo campi man mano che servono nelle fasi successive.)
@@ -85,7 +86,7 @@ export async function claimNextJob(): Promise<PublishingJob | null> {
  */
 export async function updateJobStatus(
   jobId: string,
-  status: string,
+  status: PublishingJobStatus,
   extra: Partial<{
     current_step: string;
     error_code: string;

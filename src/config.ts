@@ -15,6 +15,12 @@ function required(name: string): string {
   return value;
 }
 
+// "true"/"1" => true, tutto il resto (compreso undefined) => false.
+function parseBoolean(value: string | undefined, defaultValue: boolean): boolean {
+  if (value === undefined) return defaultValue;
+  return value === "true" || value === "1";
+}
+
 export const config = {
   supabaseUrl: required("SUPABASE_URL"),
   supabaseServiceRoleKey: required("SUPABASE_SERVICE_ROLE_KEY"),
@@ -23,4 +29,15 @@ export const config = {
   // Questi hanno un valore di default, quindi non sono obbligatori
   pollIntervalMs: Number(process.env.POLL_INTERVAL_MS ?? 10000),
   workerId: process.env.WORKER_ID ?? "worker-local-1",
+
+  // Configurazione Playwright / pagina di esercitazione.
+  appUrl: process.env.APP_URL ?? "https://www.instagram.com/",
+  appUsername: process.env.APP_USERNAME || undefined,
+  appPassword: process.env.APP_PASSWORD || undefined,
+  playwrightStorageStatePath: process.env.PLAYWRIGHT_STORAGE_STATE_PATH || undefined,
+  playwrightHeadless: parseBoolean(process.env.PLAYWRIGHT_HEADLESS, true),
+  playwrightSlowMo: Number(process.env.PLAYWRIGHT_SLOW_MO ?? 0),
+
+  // Interruttore di sicurezza: finche' e' false, non si preme mai "Condividi".
+  enableRealPublishing: parseBoolean(process.env.ENABLE_REAL_PUBLISHING, false),
 };
