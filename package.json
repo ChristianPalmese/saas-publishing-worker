@@ -8,7 +8,8 @@
     "start": "tsx src/index.ts",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test:job": "tsx src/dev/testJobDryRun.ts"
+    "test:job": "tsx src/dev/testJobDryRun.ts",
+    "login": "tsx src/dev/loginAccount.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
