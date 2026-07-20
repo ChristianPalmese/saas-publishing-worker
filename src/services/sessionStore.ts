@@ -1,6 +1,9 @@
+import type { BrowserContextOptions } from "playwright";
 import { supabase } from "../supabase.js";
 import { encrypt, decrypt } from "../lib/crypto.js";
 import { PublisherError } from "../types/publishing.js";
+
+export type StorageState = Exclude<BrowserContextOptions["storageState"], undefined>;
 
 /**
  * Custodia delle sessioni browser, una per account social.
@@ -10,12 +13,6 @@ import { PublisherError } from "../types/publishing.js";
  * Supabase, mai su disco: cosi' la macchina che fa girare il worker
  * resta sostituibile e le sessioni sopravvivono a un redeploy.
  */
-
-/** Forma dello storageState di Playwright (quella che ci serve). */
-export interface StorageState {
-  cookies: unknown[];
-  origins: unknown[];
-}
 
 export interface SocialAccount {
   id: string;

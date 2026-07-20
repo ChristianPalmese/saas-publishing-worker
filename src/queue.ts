@@ -8,6 +8,7 @@ export interface PublishingJob {
   id: string;
   content_id: string | null;
   platform: string | null;
+  social_account_id: string | null;
   status: string;
   scheduled_at: string | null;
   recipe_name: string | null;

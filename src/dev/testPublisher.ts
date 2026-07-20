@@ -6,7 +6,8 @@ import type { PostOptions } from "../types/publishing.js";
  * Rispetta ENABLE_REAL_PUBLISHING: con il default (false) si ferma
  * alla schermata finale e salva uno screenshot di dry run.
  *
- * Uso: tsx src/dev/testPublisher.ts [photo|carousel|video|video-cover]
+ * Uso: tsx src/dev/testPublisher.ts [photo|carousel|video|video-cover] <social-account-id>
+ * Oppure imposta TEST_SOCIAL_ACCOUNT_ID nell'ambiente.
  */
 const scenarios: Record<string, PostOptions> = {
   photo: {
@@ -50,10 +51,19 @@ if (!options) {
 }
 
 const jobId = `manual-${scenarioName}-${Date.now()}`;
+const socialAccountId = process.argv[3] ?? process.env.TEST_SOCIAL_ACCOUNT_ID;
 
-console.log(`[test] Eseguo lo scenario "${scenarioName}" (job fittizio: ${jobId})`);
+if (!socialAccountId) {
+  console.error("[test] Errore: manca l'ID dell'account social.");
+  console.error("[test] Usa: tsx src/dev/testPublisher.ts [photo|carousel|video|video-cover] <social-account-id>");
+  console.error("[test] Oppure imposta TEST_SOCIAL_ACCOUNT_ID nell'ambiente.");
+  process.exitCode = 1;
+  process.exit(1);
+}
 
-publishMediaPost(jobId, options, async (step) => {
+console.log(`[test] Eseguo lo scenario "${scenarioName}" (job fittizio: ${jobId}) con account ${socialAccountId}`);
+
+publishMediaPost(jobId, options, socialAccountId, async (step) => {
   console.log(`[test] step: ${step}`);
 })
   .then((result) => {

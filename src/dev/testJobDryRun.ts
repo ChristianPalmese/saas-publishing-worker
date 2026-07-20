@@ -58,9 +58,14 @@ async function main() {
       path.dirname(options.mediaPaths[0]!)
     );
 
-    const result = await publishMediaPost(typedJob.id, options, async (step) => {
-      console.log(`[dry-run] step: ${step}`);
-    });
+    const result = await publishMediaPost(
+      typedJob.id,
+      options,
+      typedJob.social_account_id ?? "",
+      async (step) => {
+        console.log(`[dry-run] step: ${step}`);
+      }
+    );
 
     console.log("[dry-run] Risultato:", result);
   } catch (err) {

@@ -13,5 +13,5 @@ const postToPublish: PostOptions = {
 };
 
 test("creazione parametrica di un post", async () => {
-  await publishMediaPost("spec-test", postToPublish);
+  await publishMediaPost("spec-test", postToPublish, "spec-test-account");
 });

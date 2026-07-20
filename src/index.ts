@@ -28,9 +28,18 @@ async function processJob(job: PublishingJob): Promise<void> {
 
     await updateJobStatus(job.id, "processing", { current_step: "publishing" });
 
-    const result = await publishMediaPost(job.id, options, async (step) => {
-      await updateJobStatus(job.id, "processing", { current_step: step });
-    });
+    if (!job.social_account_id) {
+      throw new PublisherError("SESSION_EXPIRED", "Job privo di social_account_id, impossibile autenticare la sessione.");
+    }
+
+    const result = await publishMediaPost(
+      job.id,
+      options,
+      job.social_account_id,
+      async (step) => {
+        await updateJobStatus(job.id, "processing", { current_step: step });
+      }
+    );
 
     if (result.dryRun) {
       await updateJobStatus(job.id, "processing", { current_step: "dry-run-completed" });

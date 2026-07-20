@@ -1,7 +1,8 @@
-import { chromium, type BrowserContext, type Locator, type Page } from "playwright";
+import { chromium, type Locator, type Page } from "playwright";
 import fs from "node:fs";
 import path from "node:path";
 import { config } from "../config.js";
+import { loadSession, saveSession, markSessionExpired } from "../services/sessionStore.js";
 import { PublisherError, type PostOptions, type PublishResult } from "../types/publishing.js";
 
 function absoluteFile(filePath: string): string {
@@ -42,40 +43,20 @@ async function clickAvanti(page: Page): Promise<void> {
 }
 
 /**
- * Verifica se la sessione e' gia' autenticata; se non lo e', esegue il login
- * con APP_USERNAME/APP_PASSWORD. Se mancano le credenziali e la sessione
- * non e' valida, lancia un errore chiaro.
+ * Verifica che la sessione caricata dal database sia ancora valida.
+ * Se la pagina mostra il login, la sessione viene marcata come scaduta
+ * e viene sollevato un errore SESSION_EXPIRED.
  */
-async function ensureAuthenticated(page: Page): Promise<void> {
-  await page.goto(config.appUrl, { waitUntil: "domcontentloaded" });
-
-  await clickIfVisible(page.getByRole("button", { name: "Rifiuta cookie facoltativi" }));
-
+async function checkLoginPage(page: Page, socialAccountId: string): Promise<void> {
   const usernameField = page.getByRole("textbox", { name: "Numero di cellulare, nome" });
 
   if (await isVisible(usernameField)) {
-    if (!config.appUsername || !config.appPassword) {
-      throw new PublisherError(
-        "AUTHENTICATION_FAILED",
-        "La pagina richiede il login ma APP_USERNAME/APP_PASSWORD non sono configurati."
-      );
-    }
-
-    await usernameField.fill(config.appUsername);
-    await page.getByRole("textbox", { name: "Password" }).fill(config.appPassword);
-    await page.getByRole("button", { name: "Accedi", exact: true }).click();
+    await markSessionExpired(socialAccountId);
+    throw new PublisherError(
+      "SESSION_EXPIRED",
+      "Sessione scaduta o non autenticata: ricollega l'account."
+    );
   }
-
-  // Chiude fino a due popup iniziali ("Salva le info" / notifiche), solo se visibili.
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const notNow = page.getByRole("button", { name: "Non ora" }).first();
-    if (!(await clickIfVisible(notNow))) break;
-  }
-}
-
-async function saveStorageStateIfConfigured(context: BrowserContext): Promise<void> {
-  if (!config.playwrightStorageStatePath) return;
-  await context.storageState({ path: config.playwrightStorageStatePath });
 }
 
 async function openCreatePost(page: Page): Promise<void> {
@@ -212,26 +193,31 @@ async function confirmPublication(
 export async function publishMediaPost(
   jobId: string,
   options: PostOptions,
+  socialAccountId: string,
   onStep?: (step: string) => Promise<void>
 ): Promise<PublishResult> {
+  const state = await loadSession(socialAccountId);
+  if (!state) {
+    throw new PublisherError(
+      "SESSION_EXPIRED",
+      `Sessione mancante o scaduta per account ${socialAccountId}.`
+    );
+  }
+
   const browser = await chromium.launch({
     headless: config.playwrightHeadless,
     slowMo: config.playwrightSlowMo || undefined,
   });
 
   try {
-    const storageState =
-      config.playwrightStorageStatePath && fs.existsSync(config.playwrightStorageStatePath)
-        ? config.playwrightStorageStatePath
-        : undefined;
-
-    const context = await browser.newContext({ storageState });
+    const context = await browser.newContext({ storageState: state, locale: "it-IT" });
     const page = await context.newPage();
 
     try {
       await onStep?.("authenticating");
-      await ensureAuthenticated(page);
-      await saveStorageStateIfConfigured(context);
+      await page.goto(config.appUrl, { waitUntil: "domcontentloaded" });
+      await clickIfVisible(page.getByRole("button", { name: "Rifiuta cookie facoltativi" }));
+      await checkLoginPage(page, socialAccountId);
 
       await onStep?.("opening-composer");
       await openCreatePost(page);
@@ -245,7 +231,9 @@ export async function publishMediaPost(
       await configureAdvancedOptions(page, options);
 
       await onStep?.("confirming");
-      return await confirmPublication(page, jobId, options);
+      const result = await confirmPublication(page, jobId, options);
+      await saveSession(socialAccountId, await context.storageState());
+      return result;
     } catch (err) {
       const artifactsDir = absoluteFile("artifacts");
       fs.mkdirSync(artifactsDir, { recursive: true });
