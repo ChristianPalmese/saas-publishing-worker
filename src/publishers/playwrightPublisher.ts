@@ -32,14 +32,55 @@ async function clickIfVisible(locator: Locator): Promise<boolean> {
 }
 
 async function clickAvanti(page: Page): Promise<void> {
-  const button = page.getByRole("button", { name: "Avanti" }).last();
+  const candidati = page.locator('[role="button"]:visible').filter({ hasText: /^\s*Avanti\s*$/ });
 
-  if (await isVisible(button)) {
-    await button.click();
-    return;
+  try {
+    await candidati.last().waitFor({ state: "visible", timeout: 20000 });
+  } catch {
+    const tutti = page.locator('[role="button"]:visible');
+    const nomi: string[] = [];
+
+    for (let i = 0; i < await tutti.count(); i += 1) {
+      const t = (await tutti.nth(i).innerText().catch(() => "")).trim();
+      if (t) nomi.push(t);
+    }
+
+    throw new PublisherError(
+      "UPLOAD_FAILED",
+      `Pulsante Avanti non comparso entro 20s. Bottoni visibili: ${nomi.join(" | ")}`
+    );
   }
 
-  await page.getByText("Avanti", { exact: true }).last().click();
+  const totale = await candidati.count();
+
+  for (let i = totale - 1; i >= 0; i -= 1) {
+    try {
+      await candidati.nth(i).click({ timeout: 3000 });
+      console.log(`[publisher] Avanti cliccato (indice ${i} di ${totale})`);
+      return;
+    } catch {
+      continue;
+    }
+  }
+
+  throw new PublisherError("UPLOAD_FAILED", `Avanti trovato (${totale}) ma nessun click riuscito.`);
+}
+
+async function avanzaFinoAllaDidascalia(page: Page): Promise<void> {
+  const didascalia = page.getByRole("textbox", { name: /didascalia/i });
+
+  for (let i = 0; i < 3; i += 1) {
+    if (await didascalia.isVisible().catch(() => false)) return;
+    await clickAvanti(page);
+    await page.waitForTimeout(500);
+  }
+
+  if (!(await didascalia.isVisible().catch(() => false))) {
+    throw new PublisherError(
+      "UPLOAD_FAILED",
+      "Schermata didascalia non raggiunta dopo 3 click su Avanti."
+    );
+  }
 }
 
 /**
@@ -61,8 +102,8 @@ async function checkLoginPage(page: Page, socialAccountId: string): Promise<void
 
 async function openCreatePost(page: Page): Promise<void> {
   try {
-    await page.getByRole("link", { name: "Nuovo post Crea" }).click();
-    await clickIfVisible(page.getByRole("link", { name: "Post Post" }));
+    await page.getByRole("link", { name: /Nuovo post/i }).click();
+    await clickIfVisible(page.getByRole("link", { name: /^Post/i }));
 
     await page.getByRole("dialog", { name: "Crea nuovo post" }).waitFor({ state: "visible" });
   } catch (err) {
@@ -72,8 +113,6 @@ async function openCreatePost(page: Page): Promise<void> {
 
 async function uploadMedia(page: Page, options: PostOptions): Promise<void> {
   const createDialog = page.getByRole("dialog", { name: "Crea nuovo post" });
-
-  await clickIfVisible(createDialog.getByRole("button", { name: "Seleziona dal computer" }));
 
   const files = options.mediaPaths.map(assertFileExists);
 
@@ -89,7 +128,7 @@ async function uploadMedia(page: Page, options: PostOptions): Promise<void> {
     throw new PublisherError("UPLOAD_FAILED", "Caricamento del media principale fallito.");
   }
 
-  await clickAvanti(page);
+  await avanzaFinoAllaDidascalia(page);
 }
 
 async function configureVideoCover(page: Page, options: PostOptions): Promise<void> {
@@ -100,7 +139,6 @@ async function configureVideoCover(page: Page, options: PostOptions): Promise<vo
 
   try {
     await editDialog.waitFor({ state: "visible" });
-    await editDialog.getByRole("button", { name: "Seleziona dal computer" }).click();
     await editDialog.locator('input[type="file"]').setInputFiles(coverFile);
   } catch (err) {
     throw new PublisherError("UPLOAD_FAILED", "Caricamento della copertina video fallito.");
@@ -172,14 +210,68 @@ async function confirmPublication(
   }
 
   try {
-    await page.getByRole("button", { name: "Condividi" }).click();
+    const dialog = page.getByRole("dialog", { name: "Crea nuovo post" });
+    const condividi = dialog.locator('[role="button"]:visible').filter({ hasText: /^\s*Condividi\s*$/ });
 
-    // Segnale affidabile di pubblicazione completata: il dialog di creazione
-    // post scompare (Instagram chiude il modale dopo la pubblicazione).
-    await page
-      .getByRole("dialog", { name: "Crea nuovo post" })
-      .waitFor({ state: "hidden", timeout: 30_000 });
+    await condividi.last().waitFor({ state: "visible", timeout: 15000 });
+    const totale = await condividi.count();
+    console.log(`[publisher] Trovati ${totale} pulsanti Condividi nel dialog`);
+
+    let cliccato = false;
+    for (let i = totale - 1; i >= 0; i -= 1) {
+      try {
+        await condividi.nth(i).click({ timeout: 3000 });
+        console.log(`[publisher] Condividi cliccato (indice ${i} di ${totale})`);
+        cliccato = true;
+        break;
+      } catch {
+        continue;
+      }
+    }
+
+    if (!cliccato) {
+      throw new PublisherError("PUBLICATION_FAILED", `Condividi trovato (${totale}) ma nessun click riuscito.`);
+    }
+
+    await page.waitForTimeout(3000);
+    await page.screenshot({ path: path.join(artifactsDir, `${jobId}-dopo-condividi.png`), fullPage: true });
+
+    // 1. Conferma che l'operazione sia partita (puo' essere veloce)
+    const progresso = page.getByText(/Condivisione in corso/i);
+    await progresso.waitFor({ state: "visible", timeout: 10000 }).catch(() => {
+      console.log("[publisher] Progresso non intercettato (upload rapido)");
+    });
+
+    // 2. Attendi che il progresso finisca
+    await progresso.waitFor({ state: "hidden", timeout: 180000 }).catch(() => {
+      throw new PublisherError("PUBLICATION_FAILED", "Upload non completato entro 3 minuti.");
+    });
+
+    // 3. Conferma esplicita di successo
+    const fine = page.locator('[role="button"]:visible').filter({ hasText: /^\s*Fine\s*$/ });
+    try {
+      await fine.last().waitFor({ state: "visible", timeout: 30000 });
+      console.log("[publisher] Pubblicazione confermata: schermata 'Post condiviso'");
+      await page.screenshot({ path: path.join(artifactsDir, `${jobId}-pubblicato.png`), fullPage: true });
+      await fine.last().click({ timeout: 5000 }).catch(() => {});
+    } catch {
+      const conferma = page.getByText(/condivis/i).last();
+      try {
+        await conferma.waitFor({ state: "visible", timeout: 30000 });
+        console.log("[publisher] Pubblicazione confermata dall'interfaccia");
+      } catch {
+        await page.screenshot({ path: path.join(artifactsDir, `${jobId}-esito-incerto.png`), fullPage: true });
+        throw new PublisherError(
+          "PUBLICATION_FAILED",
+          "Nessuna conferma di pubblicazione: esito incerto, vedi screenshot."
+        );
+      }
+    }
+
+    // 4. Margine per completare le richieste di rete pendenti
+    await page.waitForTimeout(2000);
   } catch (err) {
+    if (err instanceof PublisherError) throw err;
     throw new PublisherError("PUBLICATION_FAILED", "Clic su Condividi non confermato dall'interfaccia.");
   }
 
