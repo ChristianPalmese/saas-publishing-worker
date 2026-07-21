@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { supabase } from "./supabase.js";
 import { config } from "./config.js";
 import { claimNextJob, updateJobStatus, type PublishingJob } from "./queue.js";
 import { publishMediaPost } from "./publishers/playwrightPublisher.js";
@@ -23,8 +24,8 @@ async function processJob(job: PublishingJob): Promise<void> {
 
   try {
     await updateJobStatus(job.id, "processing", { current_step: "loading-payload" });
-    const options = await loadPublishingPayload(job);
-    tempDir = options.mediaPaths[0] ? path.dirname(options.mediaPaths[0]) : undefined;
+    const payload = await loadPublishingPayload(job);
+    tempDir = payload.tempDir;
 
     await updateJobStatus(job.id, "processing", { current_step: "publishing" });
 
@@ -34,7 +35,7 @@ async function processJob(job: PublishingJob): Promise<void> {
 
     const result = await publishMediaPost(
       job.id,
-      options,
+      payload.options,
       job.social_account_id,
       async (step) => {
         await updateJobStatus(job.id, "processing", { current_step: step });
@@ -42,15 +43,28 @@ async function processJob(job: PublishingJob): Promise<void> {
     );
 
     if (result.dryRun) {
-      await updateJobStatus(job.id, "processing", { current_step: "dry-run-completed" });
+      await updateJobStatus(job.id, "pending", { current_step: "dry-run-completed" });
       console.log(`[worker] Job ${job.id}: dry run completato, nessuna pubblicazione reale.`);
       return;
     }
 
     await updateJobStatus(job.id, "published", {
       current_step: "publication-completed",
+      published_at: new Date().toISOString(),
       ...(result.externalPostId ? { external_post_id: result.externalPostId } : {}),
     });
+
+    if (job.content_id) {
+      const { error: contentError } = await supabase
+        .from("contents")
+        .update({ status: "published" })
+        .eq("id", job.content_id);
+
+      if (contentError) {
+        console.error(`[worker] Errore aggiornando contents per job ${job.id}:`, contentError.message);
+      }
+    }
+
     console.log(`[worker] Job ${job.id} pubblicato.`);
   } catch (err) {
     const errorCode = err instanceof PublisherError ? err.code : "UNKNOWN_ERROR";
@@ -60,6 +74,17 @@ async function processJob(job: PublishingJob): Promise<void> {
       current_step: "publication-failed",
       error_code: errorCode,
     });
+
+    if (job.content_id) {
+      const { error: contentError } = await supabase
+        .from("contents")
+        .update({ status: "failed" })
+        .eq("id", job.content_id);
+
+      if (contentError) {
+        console.error(`[worker] Errore aggiornando contents per job ${job.id}:`, contentError.message);
+      }
+    }
   } finally {
     if (tempDir) {
       await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
@@ -89,10 +114,10 @@ async function mainLoop(): Promise<void> {
     try {
       const job = await claimNextJob();
 
-      if (job) {
-        await processJob(job);
-      } else {
+      if (!job) {
         process.stdout.write(".");
+      } else {
+        await processJob(job);
       }
     } catch (err) {
       console.error("\n[worker] Errore imprevisto nel loop:", err);

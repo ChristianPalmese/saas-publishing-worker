@@ -44,7 +44,8 @@ async function main() {
   const typedJob = job as PublishingJob;
 
   try {
-    const options = await loadPublishingPayload(typedJob);
+    const payload = await loadPublishingPayload(typedJob);
+    const options = payload.options;
 
     console.log("[dry-run] Job ID:", typedJob.id);
     console.log("[dry-run] Content ID:", typedJob.content_id);
@@ -55,7 +56,7 @@ async function main() {
     console.log("[dry-run] Copertina presente:", Boolean(options.coverPath));
     console.log(
       "[dry-run] Cartella temporanea media (NON eliminata, per verifica manuale):",
-      path.dirname(options.mediaPaths[0]!)
+      payload.tempDir
     );
 
     const result = await publishMediaPost(

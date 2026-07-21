@@ -3,7 +3,7 @@ import { config } from "./config.js";
 import type { PublishingJobStatus } from "./types/publishing.js";
 
 // Tipo che descrive un job cosi' come ci arriva dal database.
-// (Semplificato: aggiungeremo campi man mano che servono nelle fasi successive.)
+// Aggiungiamo i campi necessari per l'RPC di claim e la logica di retry.
 export interface PublishingJob {
   id: string;
   content_id: string | null;
@@ -15,6 +15,11 @@ export interface PublishingJob {
   options: Record<string, unknown>;
   current_step: string | null;
   retry_count: number | null;
+  format: string | null;
+  claimed_by: string | null;
+  claimed_at: string | null;
+  attempts: number | null;
+  max_attempts: number | null;
 }
 
 /**
@@ -35,50 +40,26 @@ export interface PublishingJob {
  * Ritorna il job preso in carico, oppure null se non c'e' lavoro.
  */
 export async function claimNextJob(): Promise<PublishingJob | null> {
-  // 1. Cerco un candidato: il job in attesa piu' vecchio il cui orario e' arrivato.
-  const nowIso = new Date().toISOString();
+  const { data, error } = await supabase.rpc("claim_next_publishing_job", {
+    p_worker_id: config.workerId,
+  });
 
-  const { data: candidates, error: selectError } = await supabase
-    .from("publishing_jobs")
-    .select("*")
-    .eq("status", "pending")
-    .lte("scheduled_at", nowIso)
-    .order("scheduled_at", { ascending: true })
-    .limit(1);
-
-  if (selectError) {
-    console.error("[queue] Errore nel cercare job:", selectError.message);
+  if (error) {
+    console.error("[queue] Errore nel claim RPC:", error.message);
     return null;
   }
 
-  if (!candidates || candidates.length === 0) {
-    return null; // nessun lavoro al momento
-  }
-
-  const candidate = candidates[0] as PublishingJob;
-
-  // 2. Provo a "reclamarlo": lo passo a 'processing' SOLO se e' ancora 'pending'.
-  //    Se un altro worker l'ha gia' preso, questo update non tocca nessuna riga.
-  const { data: claimed, error: claimError } = await supabase
-    .from("publishing_jobs")
-    .update({
-      status: "processing",
-      current_step: "claimed",
-    })
-    .eq("id", candidate.id)
-    .eq("status", "pending") // <-- questa condizione e' il "lock"
-    .select()
-    .single();
-
-  if (claimError) {
-    // Se l'errore e' "nessuna riga aggiornata", vuol dire che un altro
-    // worker l'ha preso un attimo prima: non e' un vero errore, riproviamo dopo.
-    console.warn("[queue] Job gia' preso da un altro worker o non piu' disponibile:", candidate.id);
+  if (!data) {
     return null;
   }
 
-  console.log(`[queue] Job preso in carico: ${claimed.id} (${claimed.platform ?? "?"})`);
-  return claimed as PublishingJob;
+  const job = Array.isArray(data) ? data[0] : data;
+  if (!job || job.id == null) {
+    return null;
+  }
+
+  console.log(`[queue] Job preso in carico: ${job.id} (${job.platform ?? "?"})`);
+  return job as PublishingJob;
 }
 
 /**
@@ -92,8 +73,14 @@ export async function updateJobStatus(
     current_step: string;
     error_code: string;
     external_post_id: string;
+    published_at: string;
   }> = {}
 ): Promise<void> {
+  if (!jobId || jobId === "null") {
+    console.warn(`[queue] updateJobStatus ignorato per jobId non valido: ${JSON.stringify(jobId)}`);
+    return;
+  }
+
   const { error } = await supabase
     .from("publishing_jobs")
     .update({ status, ...extra })
