@@ -76,6 +76,17 @@ function mapContentTypeToKind(contentType: string, mediaCount: number): PostKind
   );
 }
 
+function normalizeHashtag(candidate: string): string | undefined {
+  const trimmed = candidate.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const noSpaces = trimmed.replace(/\s+/g, "");
+  const withHash = noSpaces.startsWith("#") ? noSpaces : `#${noSpaces}`;
+  return withHash;
+}
+
 /**
  * Costruisce i PostOptions per publishMediaPost() leggendo direttamente
  * contents / media_assets / content_platforms su Supabase (nessuna route
@@ -151,7 +162,13 @@ export async function loadPublishingPayload(
       ? await downloadToTempFile(coverAssets[0], jobDir)
       : undefined;
 
-  const caption = [contentRow.caption, contentRow.hashtags?.length ? contentRow.hashtags.join(" ") : undefined]
+  const normalizedHashtags = contentRow.hashtags
+    ? contentRow.hashtags
+        .map(normalizeHashtag)
+        .filter((tag): tag is string => Boolean(tag))
+    : [];
+
+  const caption = [contentRow.caption, normalizedHashtags.length ? normalizedHashtags.join(" ") : undefined]
     .filter((part): part is string => Boolean(part))
     .join("\n\n");
 

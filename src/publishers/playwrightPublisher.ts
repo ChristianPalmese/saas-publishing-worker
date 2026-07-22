@@ -25,10 +25,53 @@ async function isVisible(locator: Locator): Promise<boolean> {
   return locator.isVisible().catch(() => false);
 }
 
-async function clickIfVisible(locator: Locator): Promise<boolean> {
+export async function tryClickWithFallback(attempts: Array<() => Promise<void>>): Promise<boolean> {
+  for (const attempt of attempts) {
+    try {
+      await attempt();
+      return true;
+    } catch {
+      continue;
+    }
+  }
+
+  return false;
+}
+
+async function clickWithFallback(locator: Locator, page: Page): Promise<boolean> {
+  const attempts: Array<() => Promise<void>> = [
+    async () => {
+      await locator.scrollIntoViewIfNeeded().catch(() => undefined);
+      await locator.click({ timeout: 3000 });
+    },
+    async () => {
+      await locator.scrollIntoViewIfNeeded().catch(() => undefined);
+      await locator.click({ timeout: 3000, force: true });
+    },
+    async () => {
+      await locator.scrollIntoViewIfNeeded().catch(() => undefined);
+      await locator.evaluate((element) => {
+        const event = new MouseEvent("click", {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          view: window,
+        });
+        element.dispatchEvent(event);
+      });
+    },
+    async () => {
+      await locator.focus().catch(() => undefined);
+      await page.keyboard.press("Enter");
+    },
+  ];
+
+  return tryClickWithFallback(attempts);
+}
+
+async function clickIfVisible(page: Page, locator: Locator): Promise<boolean> {
   if (!(await isVisible(locator))) return false;
-  await locator.click();
-  return true;
+  return clickWithFallback(locator, page);
 }
 
 async function clickAvanti(page: Page): Promise<void> {
@@ -54,12 +97,9 @@ async function clickAvanti(page: Page): Promise<void> {
   const totale = await candidati.count();
 
   for (let i = totale - 1; i >= 0; i -= 1) {
-    try {
-      await candidati.nth(i).click({ timeout: 3000 });
+    if (await clickWithFallback(candidati.nth(i), page)) {
       console.log(`[publisher] Avanti cliccato (indice ${i} di ${totale})`);
       return;
-    } catch {
-      continue;
     }
   }
 
@@ -102,8 +142,8 @@ async function checkLoginPage(page: Page, socialAccountId: string): Promise<void
 
 async function openCreatePost(page: Page): Promise<void> {
   try {
-    await page.getByRole("link", { name: /Nuovo post/i }).click();
-    await clickIfVisible(page.getByRole("link", { name: /^Post/i }));
+    await clickWithFallback(page.getByRole("link", { name: /Nuovo post/i }), page);
+    await clickIfVisible(page, page.getByRole("link", { name: /^Post/i }));
 
     await page.getByRole("dialog", { name: "Crea nuovo post" }).waitFor({ state: "visible" });
   } catch (err) {
@@ -219,13 +259,10 @@ async function confirmPublication(
 
     let cliccato = false;
     for (let i = totale - 1; i >= 0; i -= 1) {
-      try {
-        await condividi.nth(i).click({ timeout: 3000 });
+      if (await clickWithFallback(condividi.nth(i), page)) {
         console.log(`[publisher] Condividi cliccato (indice ${i} di ${totale})`);
         cliccato = true;
         break;
-      } catch {
-        continue;
       }
     }
 
@@ -253,8 +290,18 @@ async function confirmPublication(
       await fine.last().waitFor({ state: "visible", timeout: 30000 });
       console.log("[publisher] Pubblicazione confermata: schermata 'Post condiviso'");
       await page.screenshot({ path: path.join(artifactsDir, `${jobId}-pubblicato.png`), fullPage: true });
-      await fine.last().click({ timeout: 5000 }).catch(() => {});
-    } catch {
+      
+      if (await clickWithFallback(fine.last(), page)) {
+        console.log("[publisher] Pulsante Fine cliccato, chiusura dialog...");
+        const dialog = page.getByRole("dialog", { name: "Crea nuovo post" });
+        await dialog.waitFor({ state: "hidden", timeout: 10000 }).catch(() => {
+          console.log("[publisher] Dialog non scomparso: potrebbe essere gia' chiuso");
+        });
+        console.log("[publisher] Dialog chiuso, pubblicazione completata.");
+      } else {
+        throw new PublisherError("PUBLICATION_FAILED", "Impossibile cliccare il pulsante Fine.");
+      }
+    } catch (err) {
       const conferma = page.getByText(/condivis/i).last();
       try {
         await conferma.waitFor({ state: "visible", timeout: 30000 });
@@ -308,7 +355,7 @@ export async function publishMediaPost(
     try {
       await onStep?.("authenticating");
       await page.goto(config.appUrl, { waitUntil: "domcontentloaded" });
-      await clickIfVisible(page.getByRole("button", { name: "Rifiuta cookie facoltativi" }));
+      await clickIfVisible(page, page.getByRole("button", { name: "Rifiuta cookie facoltativi" }));
       await checkLoginPage(page, socialAccountId);
 
       await onStep?.("opening-composer");
